@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#ffe8c7" />
+  <title>星河的小姐姐 · 语音聊天</title>
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <main id="app" class="state-idle">
+    <h1 class="title">星河的小姐姐</h1>
+    <p class="subtitle">陪你聊天、讲故事、唱儿歌</p>
+
+    <!-- 会随状态变化的卡通脸（纯 SVG，无外部图片） -->
+    <div class="face-wrap" id="faceWrap">
+      <svg class="face" viewBox="0 0 200 200" aria-hidden="true">
+        <ellipse class="ear ear-left" cx="40" cy="100" rx="20" ry="28" />
+        <ellipse class="ear ear-right" cx="160" cy="100" rx="20" ry="28" />
+        <circle class="head" cx="100" cy="105" r="72" />
+        <circle class="cheek cheek-left" cx="58" cy="122" r="11" />
+        <circle class="cheek cheek-right" cx="142" cy="122" r="11" />
+        <circle class="eye eye-left" cx="76" cy="96" r="10" />
+        <circle class="eye eye-right" cx="124" cy="96" r="10" />
+        <circle class="pupil pupil-left" cx="76" cy="96" r="4.5" />
+        <circle class="pupil pupil-right" cx="124" cy="96" r="4.5" />
+        <path class="mouth" d="M72 132 Q100 160 128 132" />
+      </svg>
+      <!-- 思考态转圈 -->
+      <div class="think-spinner" aria-hidden="true"></div>
+    </div>
+
+    <div class="status" id="statusText">点下面的按钮，我们开始聊天吧</div>
+    <div class="interim" id="interimText"></div>
+    <div class="bubble" id="replyBubble"></div>
+
+    <div class="controls">
+      <button id="startBtn" class="btn btn-primary">开始聊天</button>
+      <button id="endBtn" class="btn btn-secondary" hidden>结束</button>
+    </div>
+
+    <button id="settingsBtn" class="btn btn-ghost">设置</button>
+
+    <div class="support-warning" id="supportWarning" hidden></div>
+
+    <!-- 设置面板：粘贴 DeepSeek Key -->
+    <div class="settings-panel" id="settingsPanel" hidden>
+      <h2>设置</h2>
+      <label for="apiKeyInput">DeepSeek API Key</label>
+      <input id="apiKeyInput" type="password" placeholder="粘贴你的 DeepSeek Key" autocomplete="off" />
+      <p class="hint">Key 只保存在本机浏览器（localStorage），不会上传到任何服务器，也不会写进源码。可在 https://platform.deepseek.com 获取。</p>
+      <div class="settings-actions">
+        <button id="saveKeyBtn" class="btn btn-primary">保存</button>
+        <button id="closeSettingsBtn" class="btn btn-ghost">关闭</button>
+      </div>
+    </div>
+  </main>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
