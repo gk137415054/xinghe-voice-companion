@@ -24,6 +24,7 @@ export class SpeechManager {
     this.listening = false;
     this._finalText = "";
     this._manualStop = false;
+    this._bargeIn = false; // 旁路监听（说话时监听，用于随时打断）
 
     // 当前 Edge TTS 客户端实例（用于取消）
     this._currentEdge = null;
@@ -74,6 +75,19 @@ export class SpeechManager {
     rec.onend = () => {
       this.listening = false;
       const finalText = this._finalText;
+      if (this._bargeIn) {
+        // barge-in（说话时监听）：仍在对话中，自动重启监听继续听
+        this._manualStop = false;
+        if (this._bargeIn) {
+          try {
+            this.recognition.start();
+            this.listening = true;
+          } catch (e) {
+            /* 重启失败则静默，由上层超时或下一轮处理 */
+          }
+        }
+        return;
+      }
       if (this._manualStop) {
         this._manualStop = false;
         return;
@@ -131,6 +145,36 @@ export class SpeechManager {
 
   // 主动停止听写（用于结束会话）
   stop() {
+    if (this.recognition && this.listening) {
+      this._manualStop = true;
+      try {
+        this.recognition.stop();
+      } catch (e) {
+        /* ignore */
+      }
+    }
+  }
+
+  // 开启"旁路监听"：AI 说话时也听，用于随时打断（barge-in）
+  startBargeIn() {
+    if (!this.recognition) return false;
+    if (this.listening) return true;
+    this._bargeIn = true;
+    this._finalText = "";
+    this._manualStop = false;
+    this.listening = true;
+    try {
+      this.recognition.start();
+      return true;
+    } catch (e) {
+      this.listening = false;
+      return false;
+    }
+  }
+
+  // 停止旁路监听
+  stopBargeIn() {
+    this._bargeIn = false;
     if (this.recognition && this.listening) {
       this._manualStop = true;
       try {
