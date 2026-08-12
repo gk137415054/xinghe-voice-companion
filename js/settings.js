@@ -1,10 +1,11 @@
 // settings.js
-// DeepSeek Key 设置面板 + 嗓音选择 + localStorage 持久化
+// DeepSeek Key 设置面板 + 嗓音选择 + 随时打断开关 + localStorage 持久化
 
 import { DEFAULT_EDGE_VOICE } from "./edgeTts.js";
 
 const STORAGE_KEY = "voiceCompanion.deepseekApiKey";
 const VOICE_STORAGE_KEY = "voiceCompanion.edgeVoice";
+const BARGE_IN_STORAGE_KEY = "voiceCompanion.bargeIn"; // 随时打断开关，默认开启
 
 // 可选的"Key 已保存"回调（由 app.js 注册），用于会话中重填 Key 后自动恢复
 let onKeySaved = null;
@@ -46,7 +47,6 @@ export function getVoice() {
   try {
     const v = localStorage.getItem(VOICE_STORAGE_KEY);
     if (!v) return DEFAULT_EDGE_VOICE;
-    // 校验是否为已知选项，避免脏数据
     return VOICE_OPTIONS.some((o) => o.id === v) ? v : DEFAULT_EDGE_VOICE;
   } catch (e) {
     return DEFAULT_EDGE_VOICE;
@@ -68,14 +68,36 @@ export function setVoice(voice) {
   }
 }
 
+// 读取"随时打断"开关（默认开启）
+export function getBargeIn() {
+  try {
+    const v = localStorage.getItem(BARGE_IN_STORAGE_KEY);
+    if (v === null) return true; // 默认开
+    return v === "1";
+  } catch (e) {
+    return true;
+  }
+}
+
+// 保存"随时打断"开关
+function setBargeIn(on) {
+  try {
+    localStorage.setItem(BARGE_IN_STORAGE_KEY, on ? "1" : "0");
+  } catch (e) {
+    /* ignore */
+  }
+}
+
 // 打开设置面板（供 app.js 在缺少 Key 时调用）
 export function openSettings() {
   const panel = document.getElementById("settingsPanel");
   const input = document.getElementById("apiKeyInput");
   const select = document.getElementById("voiceSelect");
+  const bargeToggle = document.getElementById("bargeInToggle");
   if (panel) {
     if (input) input.value = getApiKey();
     if (select) select.value = getVoice();
+    if (bargeToggle) bargeToggle.checked = getBargeIn();
     panel.hidden = false;
     if (input) input.focus();
   }
@@ -117,14 +139,17 @@ export function initSettingsPanel() {
   const saveBtn = document.getElementById("saveKeyBtn");
   const input = document.getElementById("apiKeyInput");
   const select = document.getElementById("voiceSelect");
+  const bargeToggle = document.getElementById("bargeInToggle");
 
   populateVoiceSelect();
   if (input) input.value = getApiKey();
+  if (bargeToggle) bargeToggle.checked = getBargeIn();
 
   if (openBtn) {
     openBtn.addEventListener("click", () => {
       if (input) input.value = getApiKey();
       if (select) select.value = getVoice();
+      if (bargeToggle) bargeToggle.checked = getBargeIn();
       panel.hidden = false;
       if (input) input.focus();
     });
@@ -147,6 +172,7 @@ export function initSettingsPanel() {
       const voice = select ? select.value : getVoice();
       const keyOk = setApiKey(value);
       const voiceOk = setVoice(voice);
+      if (bargeToggle) setBargeIn(bargeToggle.checked);
       if (keyOk && voiceOk) {
         showToast("已保存，可以开始聊天啦");
         panel.hidden = true;
