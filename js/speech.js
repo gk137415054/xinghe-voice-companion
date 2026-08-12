@@ -1,6 +1,8 @@
 // speech.js
 // 语音能力封装：听写(STT) 与 朗读(TTS)
-// 依赖浏览器原生 Web Speech API，无外部依赖。
+// TTS 优先使用微软 Edge 神经嗓音（edgeTts.js），任何失败自动回退浏览器原生 SpeechSynthesis。
+
+import { EdgeTtsClient, DEFAULT_EDGE_VOICE } from "./edgeTts.js";
 
 // 兼容不同浏览器前缀（Chrome/Edge 使用 webkit 前缀）
 const SpeechRecognitionImpl =
@@ -11,7 +13,7 @@ export function isSTTSupported() {
   return SpeechRecognitionImpl !== null;
 }
 
-// 是否支持语音合成
+// 是否支持语音合成（原生兜底所需）
 export function isTTSSupported() {
   return typeof window.speechSynthesis !== "undefined";
 }
@@ -22,6 +24,9 @@ export class SpeechManager {
     this.listening = false;
     this._finalText = "";
     this._manualStop = false;
+
+    // 当前 Edge TTS 客户端实例（用于取消）
+    this._currentEdge = null;
 
     // 外部回调（由 app.js 赋值）
     this.onInterim = () => {};
@@ -90,7 +95,7 @@ export class SpeechManager {
     }
   }
 
-  // 选择最合适的中文嗓音（优先女性化名称，语气温暖）
+  // 选择最合适的中文嗓音（优先女性化名称，语气温暖）—— 仅用于原生兜底
   getChineseVoice() {
     if (!isTTSSupported()) return null;
     const voices = window.speechSynthesis.getVoices();
@@ -136,8 +141,68 @@ export class SpeechManager {
     }
   }
 
-  // 朗读文本
+  /**
+   * 朗读文本。
+   * 优先使用 Edge 神经 TTS；任何失败（连接/协议/超时/解析/播放）自动回退原生 SpeechSynthesis。
+   * @param {string} text 待朗读文本
+   * @param {Object} [handlers] { voice, onStart, onEnd, onError }
+   */
   speak(text, handlers = {}) {
+    const voice = handlers.voice || DEFAULT_EDGE_VOICE;
+    // 优先 Edge 神经 TTS；环境不支持 WebSocket 时直接走原生兜底
+    if (typeof window !== "undefined" && "WebSocket" in window) {
+      this._speakWithEdge(text, voice, handlers);
+    } else {
+      this._fallbackSpeak(text, handlers);
+    }
+  }
+
+  /**
+   * 用 Edge TTS 朗读；失败只回退一次（fellBack 守卫），避免死循环。
+   * @param {string} text
+   * @param {string} voice
+   * @param {Object} handlers
+   */
+  _speakWithEdge(text, voice, handlers) {
+    const client = new EdgeTtsClient();
+    this._currentEdge = client;
+    let fellBack = false;
+
+    const doFallback = () => {
+      if (fellBack) return;
+      fellBack = true;
+      this._currentEdge = null;
+      console.warn(
+        "[TTS] Edge 神经 TTS 不可用，回退到浏览器原生语音合成（SpeechSynthesis）。"
+      );
+      this._fallbackSpeak(text, handlers);
+    };
+
+    try {
+      client.speak(text, {
+        voice,
+        onStart: () => {
+          if (handlers.onStart) handlers.onStart();
+        },
+        onEnd: () => {
+          this._currentEdge = null;
+          if (handlers.onEnd) handlers.onEnd();
+        },
+        onError: () => {
+          doFallback();
+        },
+      });
+    } catch (e) {
+      doFallback();
+    }
+  }
+
+  /**
+   * 浏览器原生 SpeechSynthesis 兜底朗读。
+   * @param {string} text
+   * @param {Object} handlers
+   */
+  _fallbackSpeak(text, handlers) {
     if (!isTTSSupported()) {
       if (handlers.onError) handlers.onError("TTS_UNSUPPORTED");
       return;
@@ -161,8 +226,16 @@ export class SpeechManager {
     window.speechSynthesis.speak(utterance);
   }
 
-  // 取消当前朗读（用于打断）
+  // 取消当前朗读（用于打断）：同时取消 Edge 与 原生
   cancelSpeak() {
+    if (this._currentEdge) {
+      try {
+        this._currentEdge.cancel();
+      } catch (e) {
+        /* ignore */
+      }
+      this._currentEdge = null;
+    }
     if (isTTSSupported()) {
       try {
         window.speechSynthesis.cancel();
