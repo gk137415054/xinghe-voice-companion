@@ -254,6 +254,19 @@ body {
   outline: none;
 }
 
+.settings-panel select {
+  width: 100%;
+  padding: 12px 14px;
+  border: 2px solid var(--accent);
+  border-radius: 14px;
+  font-size: 16px;
+  background: #fff;
+  color: var(--text);
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
 .settings-panel .hint {
   font-size: 12px;
   color: var(--muted);
