@@ -6,7 +6,8 @@
 
 ## 功能特性
 
-- **语音聊天闭环**：听写（Web Speech API）→ 大模型（DeepSeek）→ 朗读（SpeechSynthesis）自动循环。
+- **语音聊天闭环**：听写（Web Speech API）→ 大模型（DeepSeek）→ 朗读 自动循环。
+- **真人般的自然嗓音**：朗读优先使用**微软 Edge 神经 TTS**（如"晓晓 XiaoxiaoNeural"，温柔女声，像大姐姐），免费、无需任何 Key；任何异常自动回退浏览器原生 SpeechSynthesis。
 - **屏幕常亮**：使用 Screen Wake Lock API，聊天时尽量不真正息屏。
 - **状态可视化**：纯 CSS/SVG 卡通脸随状态变化（监听=侧耳、思考=眨眼转圈、说话=嘴巴动）。
 - **儿童安全护栏**：系统提示词中明确不展开危险/不健康内容、不询问/复述隐私、先安抚情绪、回复简短适合朗读。
@@ -59,7 +60,7 @@
 | 能力 | 推荐 | 说明 |
 | --- | --- | --- |
 | 语音听写 STT | 安卓 Chrome / Edge | 使用 `webkitSpeechRecognition`，需联网、需麦克风权限 |
-| 语音朗读 TTS | Chrome / Edge / Safari | 使用 `SpeechSynthesis`，中文嗓音依系统而定 |
+| 语音朗读 TTS | Chrome / Edge（推荐安卓 Chrome） | 优先 **Edge 神经 TTS**（在线，最自然）；失败自动回退 `SpeechSynthesis` |
 | 屏幕常亮 | Chrome / Edge 较新版本 | `Wake Lock API`，不支持时自动跳过，不影响聊天 |
 
 - **强烈建议用最新版安卓 Chrome** 体验最佳（也是目标平台）。
@@ -81,6 +82,15 @@ DeepSeek `deepseek-chat` 非常便宜（约 ¥1/百万输入 token、¥2/百万�
   - 遇到身体不适等表述，引导询问家长/医生；
   - 定期检查并妥善保管设备上的 DeepSeek Key。
 
+## 朗读嗓音（微软 Edge 神经 TTS）
+
+为让声音自然、像真人，朗读环节默认走微软在线神经语音（无需 Key、免费）：
+
+- 在应用「设置」里可选择嗓音：`晓晓`（温柔女声·默认）、`云希`（阳光男声）、`晓伊`（甜美女声）、`云扬`（沉稳男声）。
+- 需要联网；首次连接会有一个很短的握手延迟。
+- **若网络或微软接口异常，会自动回退到手机自带嗓音（SpeechSynthesis）**，聊天不中断，只是声音会偏"机器"一些。
+- 该接口为微软公共服务，儿童使用建议在家长陪同下、网络环境正常时进行。
+
 ## 文件结构
 
 ```
@@ -90,9 +100,10 @@ voice-companion/
 │   └── styles.css      # 温暖配色、动画、移动端布局
 ├── js/
 │   ├── persona.js      # 人格设定 + 系统提示词 + 儿童护栏常量
-│   ├── speech.js       # STT 与 TTS 封装（含降级检测）
+│   ├── speech.js       # STT 与 TTS 封装（优先 Edge 神经 TTS，含降级回退）
+│   ├── edgeTts.js      # 微软 Edge 神经 TTS 客户端（WebSocket）
 │   ├── llm.js          # DeepSeek API 客户端
-│   ├── settings.js     # Key 设置面板 + localStorage
+│   ├── settings.js     # Key / 嗓音设置面板 + localStorage
 │   └── app.js          # 主流程：状态机、自动循环、UI 联动
 └── README.md
 ```
