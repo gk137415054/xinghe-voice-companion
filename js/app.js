@@ -10,6 +10,7 @@ import { SpeechManager, isSTTSupported, isTTSSupported } from "./speech.js";
 import { DeepSeekClient } from "./llm.js";
 import {
   getApiKey,
+  getVoice,
   initSettingsPanel,
   openSettings,
   setOnKeySaved,
@@ -237,6 +238,11 @@ class VoiceCompanionApp {
     this.setState("speaking");
     this.replyEl.textContent = text;
     this.speech.speak(text, {
+      voice: getVoice(),
+      onStart: () => {
+        // 朗读已开始（Edge 神经嗓音或原生兜底），确保处于说话态
+        if (this.state !== "speaking") this.setState("speaking");
+      },
       onEnd: () => {
         if (!this.sessionActive) return;
         this.enterListening();
