@@ -1,0 +1,305 @@
+/* styles.css —— 温暖柔和配色，移动端优先，浅色主题 */
+:root {
+  --bg: #fff7ec;
+  --bg2: #ffe8c7;
+  --card: #fffdf8;
+  --primary: #ff9e6d;
+  --primary-d: #f5824f;
+  --secondary: #ffc2c2;
+  --text: #5b4636;
+  --muted: #a98e76;
+  --accent: #ffd29b;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: radial-gradient(circle at 50% 0%, var(--bg2), var(--bg) 70%);
+  color: var(--text);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+#app {
+  width: 100%;
+  max-width: 480px;
+  min-height: 100vh;
+  padding: 24px 20px 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+.title {
+  font-size: 26px;
+  margin: 8px 0 2px;
+  color: var(--primary-d);
+}
+
+.subtitle {
+  margin: 0 0 18px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* ---------- 卡通脸 ---------- */
+.face-wrap {
+  position: relative;
+  width: 220px;
+  height: 220px;
+  margin: 6px 0 10px;
+}
+
+.face {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.head { fill: #ffe0b8; }
+.ear { fill: #ffd29b; }
+.cheek { fill: #ffc2c2; opacity: 0.8; }
+.eye { fill: #5b4636; }
+.pupil { fill: #fff; }
+.mouth {
+  fill: none;
+  stroke: #c8743f;
+  stroke-width: 5;
+  stroke-linecap: round;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* 思考态转圈 */
+.think-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 200px;
+  height: 200px;
+  margin: -100px 0 0 -100px;
+  border: 6px dashed var(--accent);
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---------- 状态动画 ---------- */
+/* 监听态：耳朵轻轻抖动（侧耳倾听） */
+.state-listening .ear {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation-duration: 1.2s;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+.state-listening .ear-left { animation-name: earWiggleL; }
+.state-listening .ear-right { animation-name: earWiggleR; }
+
+/* 思考态：眼睛眨动 + 外圈转圈 */
+.state-thinking .eye,
+.state-thinking .pupil {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: blink 2.4s ease-in-out infinite;
+}
+.state-thinking .think-spinner {
+  opacity: 0.9;
+  animation: spin 3s linear infinite;
+}
+
+/* 说话态：嘴巴动 */
+.state-speaking .mouth {
+  animation: talk 0.5s ease-in-out infinite;
+}
+
+@keyframes earWiggleL {
+  0%, 100% { transform: rotate(0deg) translateY(0); }
+  50% { transform: rotate(-10deg) translateY(-4px); }
+}
+@keyframes earWiggleR {
+  0%, 100% { transform: rotate(0deg) translateY(0); }
+  50% { transform: rotate(10deg) translateY(-4px); }
+}
+@keyframes blink {
+  0%, 92%, 100% { transform: scaleY(1); }
+  96% { transform: scaleY(0.1); }
+}
+@keyframes talk {
+  0%, 100% { transform: scaleY(1); }
+  50% { transform: scaleY(0.4) translateY(5px); }
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ---------- 文字区域 ---------- */
+.status {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 6px 0;
+  min-height: 28px;
+}
+
+.interim {
+  font-size: 16px;
+  color: var(--muted);
+  min-height: 22px;
+  margin-bottom: 6px;
+  max-width: 90%;
+}
+
+.bubble {
+  background: var(--card);
+  border-radius: 18px;
+  padding: 14px 18px;
+  margin: 8px 0 18px;
+  font-size: 18px;
+  line-height: 1.6;
+  min-height: 20px;
+  max-width: 92%;
+  box-shadow: 0 4px 14px rgba(245, 130, 79, 0.12);
+}
+
+/* ---------- 按钮 ---------- */
+.controls {
+  display: flex;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.btn {
+  border: none;
+  border-radius: 28px;
+  font-size: 20px;
+  font-weight: 700;
+  padding: 16px 34px;
+  cursor: pointer;
+  transition: transform 0.08s ease, box-shadow 0.2s ease;
+  color: #fff;
+}
+
+.btn:active { transform: scale(0.96); }
+
+.btn-primary {
+  background: linear-gradient(180deg, var(--primary), var(--primary-d));
+  box-shadow: 0 6px 16px rgba(245, 130, 79, 0.35);
+}
+
+.btn-secondary {
+  background: linear-gradient(180deg, #ffb3b3, #ff8f8f);
+  box-shadow: 0 6px 16px rgba(255, 143, 143, 0.35);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  padding: 8px 18px;
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ---------- 设置面板 ---------- */
+.settings-panel {
+  position: fixed;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 100%;
+  max-width: 480px;
+  background: var(--card);
+  border-radius: 22px 22px 0 0;
+  padding: 22px 20px 28px;
+  box-shadow: 0 -8px 30px rgba(91, 70, 54, 0.18);
+  text-align: left;
+  z-index: 10;
+}
+
+.settings-panel h2 {
+  margin: 0 0 12px;
+  font-size: 20px;
+  color: var(--primary-d);
+}
+
+.settings-panel label {
+  display: block;
+  font-size: 14px;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.settings-panel input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 2px solid var(--accent);
+  border-radius: 14px;
+  font-size: 16px;
+  outline: none;
+}
+
+.settings-panel .hint {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.settings-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.settings-actions .btn {
+  flex: 1;
+}
+
+/* ---------- 不支持提示 ---------- */
+.support-warning {
+  margin-top: 16px;
+  background: #fff3cd;
+  color: #8a6d3b;
+  border-radius: 14px;
+  padding: 12px 16px;
+  font-size: 14px;
+  line-height: 1.6;
+  max-width: 92%;
+}
+
+/* ---------- 轻提示 toast ---------- */
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 90px;
+  transform: translateX(-50%) translateY(20px);
+  background: rgba(91, 70, 54, 0.92);
+  color: #fff;
+  padding: 10px 20px;
+  border-radius: 20px;
+  font-size: 15px;
+  opacity: 0;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  pointer-events: none;
+  z-index: 20;
+}
+
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
