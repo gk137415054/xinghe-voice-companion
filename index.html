@@ -49,6 +49,11 @@
       <label for="apiKeyInput">DeepSeek API Key</label>
       <input id="apiKeyInput" type="password" placeholder="粘贴你的 DeepSeek Key" autocomplete="off" />
       <p class="hint">Key 只保存在本机浏览器（localStorage），不会上传到任何服务器，也不会写进源码。可在 https://platform.deepseek.com 获取。</p>
+
+      <label for="voiceSelect">朗读嗓音（微软 Edge 神经语音）</label>
+      <select id="voiceSelect" class="voice-select"></select>
+      <p class="hint">默认"晓晓"，自然温柔像大姐姐。需联网；若网络或接口异常，会自动回退到手机自带嗓音。</p>
+
       <div class="settings-actions">
         <button id="saveKeyBtn" class="btn btn-primary">保存</button>
         <button id="closeSettingsBtn" class="btn btn-ghost">关闭</button>
