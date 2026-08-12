@@ -8,6 +8,7 @@ import {
 } from "./persona.js";
 import { SpeechManager, isSTTSupported, isTTSSupported } from "./speech.js";
 import { DeepSeekClient } from "./llm.js";
+import { isEcho } from "./echo.js";
 import {
   getApiKey,
   getVoice,
@@ -31,23 +32,6 @@ const STATE_TEXT = {
   speaking: "听我说哦～",
 };
 
-// 最长公共连续子串长度（用于回声判定：识别到的文本是否就是 AI 正在念的）
-function longestCommonSubstringLen(a, b) {
-  let max = 0;
-  const dp = new Array(b.length + 1).fill(0);
-  for (let i = 1; i <= a.length; i++) {
-    let prev = 0;
-    for (let j = 1; j <= b.length; j++) {
-      const tmp = dp[j];
-      if (a[i - 1] === b[j - 1]) dp[j] = prev + 1;
-      else dp[j] = 0;
-      if (dp[j] > max) max = dp[j];
-      prev = tmp;
-    }
-  }
-  return max;
-}
-
 class VoiceCompanionApp {
   constructor() {
     this.state = "idle";
@@ -55,16 +39,23 @@ class VoiceCompanionApp {
     this.history = [];
     this.wakeLock = null;
 
-    // 流式与朗读队列相关
+    // 流式与朗读流水线相关
     this._turnId = 0; // 轮次令牌：打断后旧流回调失效
-    this._ttsQueue = []; // 待朗读句子队列
-    this._ttsPlaying = false; // 当前是否正在朗读某句
     this._llmDone = false; // 本轮 LLM 是否已输出完毕
     this._currentReplyText = ""; // 本轮已生成完整回复（用于回声比对）
     this._speakStartTime = 0; // 最近一次开始朗读的时间
     this._bargeInEnabled = false; // 当前是否处于"说话时监听"态
     this._bargeInOn = true; // 用户设置：是否启用随时打断
     this._abortController = null;
+
+    // TTS 预取 + 重叠播放 流水线
+    this._ttsTextQueue = []; // 待合成文本数组
+    this._ttsReady = []; // 已合成 Blob 数组，元素 { blob, text }
+    this._synthesizing = false; // 是否正在（Edge）合成
+    this._playing = false; // 是否正在播放某句
+    this._currentPlayingText = ""; // 当前正在播放的文本
+    this._spokenText = ""; // 已送去 TTS 的累计文本（回声基准之一）
+    this._edgePrefetch = true; // 是否启用 Edge 预取；synthesize 失败则置 false 退回顺序 speak
 
     this.speech = new SpeechManager();
     this.llm = new DeepSeekClient();
@@ -235,8 +226,11 @@ class VoiceCompanionApp {
     this.speech.stopBargeIn();
     this.speech.stop();
     this.speech.cancelSpeak();
-    this._ttsQueue = [];
-    this._ttsPlaying = false;
+    this._ttsTextQueue = [];
+    this._ttsReady = [];
+    this._synthesizing = false;
+    this._playing = false;
+    this._currentPlayingText = "";
     this._bargeInEnabled = false;
     this._currentReplyText = "";
     this.releaseWakeLock();
@@ -254,9 +248,13 @@ class VoiceCompanionApp {
     // 清理说话态残留
     this._bargeInEnabled = false;
     this.speech.stopBargeIn();
-    this._ttsQueue = [];
-    this._ttsPlaying = false;
+    this._ttsTextQueue = [];
+    this._ttsReady = [];
+    this._synthesizing = false;
+    this._playing = false;
+    this._currentPlayingText = "";
     this._currentReplyText = "";
+    this.speech.cancelSpeak();
     this.setState("listening");
     this.interimEl.textContent = "我在听～";
     this.replyEl.textContent = "";
@@ -270,8 +268,13 @@ class VoiceCompanionApp {
     const turn = this._turnId;
 
     this.setState("thinking");
-    this._ttsQueue = [];
-    this._ttsPlaying = false;
+    this._ttsTextQueue = [];
+    this._ttsReady = [];
+    this._synthesizing = false;
+    this._playing = false;
+    this._currentPlayingText = "";
+    this._spokenText = "";
+    this._edgePrefetch = true;
     this._llmDone = false;
     this._currentReplyText = "";
     this._bargeInEnabled = false;
@@ -312,7 +315,13 @@ class VoiceCompanionApp {
         this._trimHistory();
         this._currentReplyText = full;
       }
-      if (this._ttsQueue.length === 0 && !this._ttsPlaying) {
+      // LLM 完成 且 队列与就绪都空 且 不播放 且不合成 → 本轮回复朗读完毕
+      if (
+        this._ttsTextQueue.length === 0 &&
+        this._ttsReady.length === 0 &&
+        !this._playing &&
+        !this._synthesizing
+      ) {
         this._onReplyFinished();
       }
     };
@@ -349,42 +358,131 @@ class VoiceCompanionApp {
     if (this._bargeInOn) this.speech.startBargeIn();
   }
 
-  // 把一句放进朗读队列并驱动播放
+  // 把一句放进待合成队列并驱动（预取 + 重叠播放）流水线
   _enqueueSentence(s) {
+    const turn = this._turnId;
     const t = (s || "").trim();
     if (!t) return;
-    this._ttsQueue.push(t);
-    this._pumpTts();
+    this._spokenText += t; // 累计已送去 TTS 的文本，作为说话中途的回声基准
+    this._ttsTextQueue.push(t);
+    this._fillSynthesis();
+    this._pumpPlayback();
   }
 
-  // 朗读队列播放器：一句播完再播下一句
-  _pumpTts() {
-    if (this._ttsPlaying) return;
-    const s = this._ttsQueue.shift();
-    if (!s) {
-      if (this._llmDone && this.sessionActive && this.state === "speaking") {
+  // 预取合成：从待合成队列取句 → Edge 合成 Blob（预取上限 2，播放期间重叠合成）
+  _fillSynthesis() {
+    const turn = this._turnId;
+
+    // 顺序兜底模式：Edge 不可用（synthesize 失败过）时，逐句 speak，保证不丢句
+    if (!this._edgePrefetch) {
+      while (
+        this._ttsTextQueue.length > 0 &&
+        !this._playing &&
+        !this._synthesizing
+      ) {
+        const t = this._ttsTextQueue.shift();
+        this.speech.speak(t, this._ttsHandlers(t));
+      }
+      return;
+    }
+
+    while (
+      this._edgePrefetch &&
+      !this._synthesizing &&
+      this._ttsTextQueue.length > 0 &&
+      this._ttsReady.length < 2
+    ) {
+      const t = this._ttsTextQueue.shift();
+      this._synthesizing = true;
+      this.speech
+        .synthesize(t, getVoice())
+        .then((blob) => {
+          if (turn !== this._turnId || !this.sessionActive) return; // 陈旧轮次结果丢弃
+          if (blob) {
+            this._ttsReady.push({ blob, text: t });
+          } else {
+            // Edge 本次返回 null → 退回顺序 speak，并整体关闭预取
+            this._edgePrefetch = false;
+            this.speech.speak(t, this._ttsHandlers(t));
+          }
+          this._synthesizing = false;
+          this._fillSynthesis();
+          this._pumpPlayback();
+        })
+        .catch(() => {
+          if (turn !== this._turnId || !this.sessionActive) return;
+          this._synthesizing = false;
+          this._edgePrefetch = false;
+          this.speech.speak(t, this._ttsHandlers(t));
+          this._fillSynthesis();
+          this._pumpPlayback();
+        });
+    }
+  }
+
+  // 顺序兜底的朗读回调（synthesize 失败时使用）；onStart 置 _playing，onEnd/onError 复位并继续流水线
+  _ttsHandlers(t) {
+    return {
+      voice: getVoice(),
+      onStart: () => {
+        this._playing = true;
+        this.replyEl.textContent += t;
+        if (this.state !== "speaking") this.setState("speaking");
+      },
+      onEnd: () => {
+        this._playing = false;
+        this._currentPlayingText = "";
+        this._pumpPlayback();
+        this._fillSynthesis();
+      },
+      onError: () => {
+        this._playing = false;
+        this._currentPlayingText = "";
+        this._pumpPlayback();
+        this._fillSynthesis();
+      },
+    };
+  }
+
+  // 播放器：取一个已合成 Blob 播放；就绪为空且 LLM 完成则结束本轮
+  _pumpPlayback() {
+    const turn = this._turnId;
+    if (turn !== this._turnId) return; // 陈旧轮次不动作
+    if (this._playing) return;
+    if (this._ttsReady.length === 0) {
+      if (
+        this._llmDone &&
+        this.sessionActive &&
+        this.state === "speaking" &&
+        !this._synthesizing
+      ) {
         this._onReplyFinished();
       }
       return;
     }
-    this._ttsPlaying = true;
-    if (this.state !== "speaking") this.setState("speaking");
-    this.speech.speak(s, {
-      voice: getVoice(),
+    const item = this._ttsReady.shift();
+    this._playing = true;
+    this._currentPlayingText = item.text;
+    this.speech.playBlob(item.blob, {
       onStart: () => {
-        // 同步把当前句显示在气泡里
-        this.replyEl.textContent += s;
         if (this.state !== "speaking") this.setState("speaking");
+        this.replyEl.textContent += item.text;
       },
       onEnd: () => {
-        this._ttsPlaying = false;
-        this._pumpTts();
+        this._playing = false;
+        this._currentPlayingText = "";
+        this._pumpPlayback();
+        this._fillSynthesis();
       },
       onError: () => {
-        this._ttsPlaying = false;
-        this._pumpTts();
+        this._playing = false;
+        this._currentPlayingText = "";
+        this._pumpPlayback();
+        this._fillSynthesis();
       },
     });
+    // 启动播放后再预取下一句 → 播放期间合成，句间无空隙
+    this._fillSynthesis();
   }
 
   // 本轮回复朗读完毕：停止 barge-in 监听，回到监听态
@@ -406,8 +504,11 @@ class VoiceCompanionApp {
     }
     this.speech.stopBargeIn();
     this.speech.cancelSpeak();
-    this._ttsQueue = [];
-    this._ttsPlaying = false;
+    this._ttsTextQueue = [];
+    this._ttsReady = [];
+    this._synthesizing = false;
+    this._playing = false;
+    this._currentPlayingText = "";
     this._llmDone = true;
     this._bargeInEnabled = false;
     this._currentReplyText = "";
@@ -425,8 +526,11 @@ class VoiceCompanionApp {
     }
     this.speech.stopBargeIn();
     this.speech.cancelSpeak();
-    this._ttsQueue = [];
-    this._ttsPlaying = false;
+    this._ttsTextQueue = [];
+    this._ttsReady = [];
+    this._synthesizing = false;
+    this._playing = false;
+    this._currentPlayingText = "";
     this._llmDone = true;
     this._bargeInEnabled = false;
     this._currentReplyText = "";
@@ -436,21 +540,19 @@ class VoiceCompanionApp {
   // 是否应视为孩子插话打断（回声过滤）
   _shouldInterrupt(child) {
     const t = (child || "").trim();
-    if (!t || t.length < 2) return false;
+    if (!t) return false;
+    if (t.length < 3) return false; // 从 2 提到 3，降低噪声误触
     // 开播前 1.2 秒不处理，规避 AI 自己外放的回声
     if (Date.now() - this._speakStartTime < BARGE_IN_GRACE_MS) return false;
-    const ai = this._currentReplyText || "";
-    if (ai && this._isEcho(t, ai)) return false; // 是回声，忽略
+    // 用「已念 + 正念 + 整段」作为回声比对基准（说话中途也能用，不再为空）
+    const ai =
+      (this._spokenText || "") +
+      " " +
+      (this._currentPlayingText || "") +
+      " " +
+      (this._currentReplyText || "");
+    if (ai && isEcho(t, ai)) return false; // 是 AI 自己声音 → 忽略，不自我打断
     return true;
-  }
-
-  // 判定 child 是否为 AI 正在念的内容（回声）
-  _isEcho(child, ai) {
-    const c = child.replace(/[\s\p{P}]/gu, "");
-    const a = ai.replace(/[\s\p{P}]/gu, "");
-    if (!c || !a) return false;
-    const lcs = longestCommonSubstringLen(c, a);
-    return lcs / Math.min(c.length, a.length) > 0.5;
   }
 
   // 裁剪历史，保留最近 MAX_HISTORY 条
