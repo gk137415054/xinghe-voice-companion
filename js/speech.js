@@ -82,15 +82,19 @@ export class SpeechManager {
       this.listening = false;
       const finalText = this._finalText;
       if (this._bargeIn) {
-        // barge-in（说话时监听）：仍在对话中，自动重启监听继续听
+        // barge-in（说话时监听）：仍在对话中，延迟重启监听继续听
+        // （延迟规避安卓 Chrome 在 onend 内立即 start 抛 InvalidStateError）
         this._manualStop = false;
         if (this._bargeIn) {
-          try {
-            this.recognition.start();
-            this.listening = true;
-          } catch (e) {
-            /* 重启失败则静默，由上层超时或下一轮处理 */
-          }
+          setTimeout(() => {
+            if (!this._bargeIn) return;
+            try {
+              this.recognition.start();
+              this.listening = true;
+            } catch (e) {
+              /* 重启失败则静默，由上层超时或下一轮处理 */
+            }
+          }, 120);
         }
         return;
       }
@@ -98,8 +102,8 @@ export class SpeechManager {
         this._manualStop = false;
         return;
       }
-      // 自然结束（静音）→ 通知上层
-      this.onEnd(finalText);
+      // 自然结束（静音）→ 通知上层（延迟一点等引擎复位，提升移动端稳定性）
+      setTimeout(() => this.onEnd(finalText), 120);
     };
 
     this.recognition = rec;
