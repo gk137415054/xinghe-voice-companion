@@ -122,6 +122,13 @@ class VoiceCompanionApp {
     this.speech.onError = (err) => {
       if (!this.sessionActive) return;
       if (this.state === "listening") {
+        if (err === "not-allowed" || err === "service-not-allowed") {
+          this.supportWarning.textContent =
+            "麦克风权限被拒绝。请点地址栏左侧的图标，允许本站点使用麦克风，然后重新点「开始聊天」。";
+          this.supportWarning.hidden = false;
+          this.endChat();
+          return;
+        }
         this.enterListening(); // 听写出错，稍后重试监听
       }
       // 说话态下的监听错误忽略（barge-in 会自动重启监听）
@@ -191,7 +198,7 @@ class VoiceCompanionApp {
   }
 
   // 开始聊天：检查能力/Key → 申请权限与 Wake Lock → 进入监听
-  async startChat() {
+  startChat() {
     if (!isSTTSupported() || !isTTSSupported()) {
       this.supportWarning.hidden = false;
       return;
@@ -203,15 +210,13 @@ class VoiceCompanionApp {
     this.sessionActive = true;
     this.history = [];
     this._bargeInOn = getBargeIn(); // 读取"随时打断"开关
-    await this.acquireWakeLock();
-    // 兜底：若用户在等待 Wake Lock 期间点了"结束"，释放残留常亮
-    if (!this.sessionActive) {
-      this.releaseWakeLock();
-      return;
-    }
     this.startBtn.hidden = true;
     this.endBtn.hidden = false;
+    // 关键：必须在用户点击手势内同步开始监听（SpeechRecognition.start 需要手势上下文），
+    // 否则安卓 Chrome/Edge 会因失去手势而拿不到麦克风、永远"听不见"。
     this.enterListening();
+    // Wake Lock 放到后面、不阻塞首次监听（失败不影响聊天）
+    this.acquireWakeLock();
   }
 
   // 结束：停止识别/朗读/流、释放 Wake Lock、回到初始态
