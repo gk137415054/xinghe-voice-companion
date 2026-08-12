@@ -3,10 +3,19 @@
 // 通过 WebSocket 直连微软在线合成接口，返回自然真人般的中文嗓音（MP3）。
 // 协议已根据 rany2/edge-tts 最新实现核实（含 Sec-MS-GEC 校验算法）。
 //
-// 设计约定：本模块只负责"成功朗读"或"上报失败"，失败后的兜底（回退原生 SpeechSynthesis）
+// 设计约定：本模块只负责"成功返回音频"或"上报失败"，失败后的兜底（回退原生 SpeechSynthesis）
 // 由 speech.js 负责，这里不自己兜底，避免重复播放。
 
 export const DEFAULT_EDGE_VOICE = "zh-CN-XiaoxiaoNeural"; // 温柔女声，最像大姐姐
+
+// 可识别的取消错误：cancel() 会 reject 进行中的 synthesize/speak，但不应被当作真实错误
+export class CancelError extends Error {
+  constructor(message = "cancelled") {
+    super(message);
+    this.name = "CancelError";
+    this.isCancel = true;
+  }
+}
 
 // ---- 微软接口常量（公开、无需密钥） ----
 const TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
@@ -82,10 +91,13 @@ export class EdgeTtsClient {
     this._onEnd = () => {};
     this._onError = () => {};
     this._timers = [];
+    // 进行中的 synthesize 的 reject（用于 cancel 时通知外层已取消）
+    this._pendingReject = null;
   }
 
   /**
-   * 朗读文本。
+   * 朗读文本（兼容旧用法 / 兜底路径）。
+   * 内部 = synthesize().then(play)，复用同一套 WS 逻辑。
    * @param {string} text 待朗读文本
    * @param {Object} handlers { voice, onStart, onEnd, onError }
    */
@@ -100,107 +112,160 @@ export class EdgeTtsClient {
       return;
     }
 
-    this._run(clean, handlers.voice || DEFAULT_EDGE_VOICE).catch((e) => {
-      console.warn("[EdgeTTS] 合成失败：", e);
-      this._onError(e);
-    });
+    this.synthesize(clean, handlers.voice || DEFAULT_EDGE_VOICE)
+      .then((blob) => {
+        if (this._cancelled || this._finished) return;
+        this._play(blob);
+      })
+      .catch((e) => {
+        // 取消属于正常打断，静默处理；其余错误上报给上层兜底
+        if (e instanceof CancelError || this._cancelled) return;
+        console.warn("[EdgeTTS] 合成失败：", e);
+        this._onError(e);
+      });
   }
 
-  async _run(text, voice) {
-    const gec = await computeGec();
-    const url =
-      WSS_BASE +
-      "&ConnectionId=" + crypto.randomUUID().replace(/-/g, "") +
-      "&Sec-MS-GEC=" + gec +
-      "&Sec-MS-GEC-Version=" + SEC_MS_GEC_VERSION;
+  /**
+   * 合成文本为 MP3 Blob（不播放）。
+   * @param {string} text 待合成文本
+   * @param {string} [voice] 嗓音名
+   * @returns {Promise<Blob>} 成功 resolve MP3 Blob；失败/取消 reject
+   */
+  synthesize(text, voice) {
+    const clean = (text || "").trim();
+    if (!clean) return Promise.reject(new Error("empty text"));
+    this._resetRunState();
+    return this._runToBlob(clean, voice || DEFAULT_EDGE_VOICE);
+  }
 
-    const ws = new WebSocket(url);
-    ws.binaryType = "arraybuffer";
-    this._ws = ws;
+  // 重置一次合成/朗读的运行态，便于同实例多次 synthesize
+  _resetRunState() {
+    this._finished = false;
+    this._cancelled = false;
+    this._ws = null;
+    this._audioChunks = [];
+    this._timers = [];
+    this._pendingReject = null;
+    this._url = null;
+    this._audioEl = null;
+  }
 
-    const audioBuffer = [];
-    let firstAudioReceived = false;
+  /**
+   * 内部：建立 WS、握手、收音频，收到 turn.end 时合并为 Blob 并 resolve。
+   * 不播放 —— 由 speak() 在拿到 Blob 后自行 _play()，从而复用同一套 WS 逻辑。
+   * @param {string} text
+   * @param {string} voice
+   * @returns {Promise<Blob>}
+   */
+  _runToBlob(text, voice) {
+    return new Promise((resolve, reject) => {
+      this._pendingReject = reject;
 
-    const connectTimer = setTimeout(() => {
-      if (ws.readyState !== WebSocket.OPEN) {
-        this._fail(new Error("connect timeout"));
-      }
-    }, CONNECT_TIMEOUT_MS);
-    this._timers.push(connectTimer);
+      computeGec()
+        .then((gec) => {
+          if (this._cancelled || this._finished) {
+            reject(new CancelError());
+            return;
+          }
 
-    const audioTimer = setTimeout(() => {
-      if (!firstAudioReceived) {
-        this._fail(new Error("no audio received in time"));
-      }
-    }, AUDIO_FIRST_TIMEOUT_MS);
-    this._timers.push(audioTimer);
+          const url =
+            WSS_BASE +
+            "&ConnectionId=" + crypto.randomUUID().replace(/-/g, "") +
+            "&Sec-MS-GEC=" + gec +
+            "&Sec-MS-GEC-Version=" + SEC_MS_GEC_VERSION;
 
-    ws.onopen = () => {
-      clearTimeout(connectTimer);
-      // ① speech.config
-      const config =
-        "X-Timestamp:" + isoNow() + "\r\n" +
-        "Content-Type:application/json; charset=utf-8\r\n" +
-        "Path:speech.config\r\n" +
-        "\r\n" +
-        JSON.stringify({
-          context: {
-            synthesis: {
-              audio: {
-                metadataoptions: {
-                  sentenceBoundaryEnabled: "false",
-                  wordBoundaryEnabled: "false",
+          const ws = new WebSocket(url);
+          ws.binaryType = "arraybuffer";
+          this._ws = ws;
+
+          const audioBuffer = [];
+          let firstAudioReceived = false;
+
+          const connectTimer = setTimeout(() => {
+            if (ws.readyState !== WebSocket.OPEN) {
+              this._fail(new Error("connect timeout"));
+            }
+          }, CONNECT_TIMEOUT_MS);
+          this._timers.push(connectTimer);
+
+          const audioTimer = setTimeout(() => {
+            if (!firstAudioReceived) {
+              this._fail(new Error("no audio received in time"));
+            }
+          }, AUDIO_FIRST_TIMEOUT_MS);
+          this._timers.push(audioTimer);
+
+          ws.onopen = () => {
+            clearTimeout(connectTimer);
+            // ① speech.config
+            const config =
+              "X-Timestamp:" + isoNow() + "\r\n" +
+              "Content-Type:application/json; charset=utf-8\r\n" +
+              "Path:speech.config\r\n" +
+              "\r\n" +
+              JSON.stringify({
+                context: {
+                  synthesis: {
+                    audio: {
+                      metadataoptions: {
+                        sentenceBoundaryEnabled: "false",
+                        wordBoundaryEnabled: "false",
+                      },
+                      outputFormat: OUTPUT_FORMAT,
+                    },
+                  },
                 },
-                outputFormat: OUTPUT_FORMAT,
-              },
-            },
-          },
+              });
+            ws.send(config);
+
+            // ② ssml
+            const requestId = crypto.randomUUID().replace(/-/g, "");
+            const ssml =
+              "X-RequestId:" + requestId + "\r\n" +
+              "Content-Type:application/ssml+xml\r\n" +
+              "X-Timestamp:" + isoNow() + "\r\n" +
+              "Path:ssml\r\n" +
+              "\r\n" +
+              buildSsml(text, voice);
+            ws.send(ssml);
+          };
+
+          ws.onmessage = (event) => {
+            if (this._cancelled || this._finished) return;
+            if (typeof event.data === "string") {
+              this._handleText(event.data, () => {
+                // 收到 turn.end → 收尾并合并为 Blob resolve
+                this._finishToBlob(audioBuffer, resolve);
+              });
+            } else {
+              // 二进制帧：音频数据
+              firstAudioReceived = true;
+              clearTimeout(audioTimer);
+              const bytes = new Uint8Array(event.data);
+              const headerLen = (bytes[0] << 8) | bytes[1]; // 前 2 字节大端 = 头长度
+              const audioData = bytes.slice(2 + headerLen); // 跳过头，剩余为 MP3
+              if (audioData.length > 0) audioBuffer.push(audioData);
+            }
+          };
+
+          ws.onerror = () => {
+            this._fail(new Error("websocket error"));
+          };
+
+          ws.onclose = () => {
+            // 若尚未通过 turn.end 收尾（异常关闭前已收到部分音频），尝试合并
+            if (this._finished || this._cancelled) return;
+            if (audioBuffer.length > 0) {
+              this._finishToBlob(audioBuffer, resolve);
+            } else {
+              this._fail(new Error("websocket closed before audio"));
+            }
+          };
+        })
+        .catch((e) => {
+          reject(e);
         });
-      ws.send(config);
-
-      // ② ssml
-      const requestId = crypto.randomUUID().replace(/-/g, "");
-      const ssml =
-        "X-RequestId:" + requestId + "\r\n" +
-        "Content-Type:application/ssml+xml\r\n" +
-        "X-Timestamp:" + isoNow() + "\r\n" +
-        "Path:ssml\r\n" +
-        "\r\n" +
-        buildSsml(text, voice);
-      ws.send(ssml);
-    };
-
-    ws.onmessage = (event) => {
-      if (this._cancelled || this._finished) return;
-      if (typeof event.data === "string") {
-        this._handleText(event.data, () => {
-          // 收到 turn.end → 收尾并播放
-          this._finish(audioBuffer);
-        });
-      } else {
-        // 二进制帧：音频数据
-        firstAudioReceived = true;
-        clearTimeout(audioTimer);
-        const bytes = new Uint8Array(event.data);
-        const headerLen = (bytes[0] << 8) | bytes[1]; // 前 2 字节大端 = 头长度
-        const audioData = bytes.slice(2 + headerLen); // 跳过头，剩余为 MP3
-        if (audioData.length > 0) audioBuffer.push(audioData);
-      }
-    };
-
-    ws.onerror = () => {
-      this._fail(new Error("websocket error"));
-    };
-
-    ws.onclose = () => {
-      // 若尚未通过 turn.end 收尾（异常关闭前已收到部分音频），尝试播放
-      if (this._finished || this._cancelled) return;
-      if (audioBuffer.length > 0) {
-        this._finish(audioBuffer);
-      } else {
-        this._fail(new Error("websocket closed before audio"));
-      }
-    };
+    });
   }
 
   // 解析文本帧头，识别 Path
@@ -222,8 +287,8 @@ export class EdgeTtsClient {
     // 其他 Path（如 audio.metadata）忽略
   }
 
-  // 收尾：合并音频并播放
-  _finish(audioBuffer) {
+  // 收尾：合并音频为 Blob 并 resolve（不播放）
+  _finishToBlob(audioBuffer, resolve) {
     if (this._finished || this._cancelled) return;
     this._finished = true;
     this._clearTimers();
@@ -240,15 +305,16 @@ export class EdgeTtsClient {
       merged.set(c, off);
       off += c.length;
     }
-    this._play(merged);
+    const blob = new Blob([merged], { type: "audio/mpeg" });
+    this._pendingReject = null;
+    resolve(blob);
   }
 
-  // 用 <audio> 元素播放 MP3
-  _play(mp3Bytes) {
-    const blob = new Blob([mp3Bytes], { type: "audio/mpeg" });
+  // 用 <audio> 元素播放 MP3 Blob
+  _play(blob) {
     const url = URL.createObjectURL(blob);
-    this._url = url;
     const audio = new Audio();
+    this._url = url;
     this._audioEl = audio;
     audio.src = url;
 
@@ -306,13 +372,16 @@ export class EdgeTtsClient {
     }
   }
 
-  // 上报失败（仅触发一次）
+  // 上报失败（仅触发一次）：reject 进行中的 synthesize/speak promise
   _fail(err) {
     if (this._finished || this._cancelled) return;
     this._finished = true;
     this._clearTimers();
     this._cleanupAudio();
-    this._onError(err);
+    if (this._pendingReject) {
+      this._pendingReject(err);
+      this._pendingReject = null;
+    }
   }
 
   _clearTimers() {
@@ -320,11 +389,14 @@ export class EdgeTtsClient {
     this._timers = [];
   }
 
-  // 取消当前朗读（用于打断）
+  // 取消当前合成/朗读（用于打断）：reject 进行中的 promise 并关闭 ws、清理
   cancel() {
     this._cancelled = true;
     this._clearTimers();
-    this._cleanupAudio();
+    if (this._pendingReject) {
+      this._pendingReject(new CancelError());
+      this._pendingReject = null;
+    }
     if (this._ws) {
       try {
         this._ws.close();
@@ -333,5 +405,6 @@ export class EdgeTtsClient {
       }
       this._ws = null;
     }
+    this._cleanupAudio();
   }
 }
